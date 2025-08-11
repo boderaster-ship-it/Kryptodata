@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Crypto & Stocks Capture PWA</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="title">📈 Data Capture Pro</div>
+  <button id="installBtn" class="btn ghost" hidden>Zum Homescreen</button>
+</header>
+
+<main class="wrap">
+  <section class="card">
+    <h2>Einstellungen</h2>
+    <div class="row">
+      <label class="field">
+        <span>Zeitraum</span>
+        <select id="rangeSel">
+          <option value="12h">12 Std.</option>
+          <option value="1d" selected>1 Tag</option>
+          <option value="7d">7 Tage</option>
+          <option value="14d">14 Tage</option>
+          <option value="30d">30 Tage</option>
+          <option value="max">Maximal</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Datenabstand</span>
+        <select id="intervalSel" title="Granularität (API-abhängig)">
+          <option value="1m">1 Min</option>
+          <option value="5m" selected>5 Min</option>
+          <option value="15m">15 Min</option>
+          <option value="1h">1 Std</option>
+          <option value="4h">4 Std</option>
+          <option value="1d">1 Tag</option>
+          <option value="1w">1 Woche</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>AlphaVantage API Key (optional für Aktien/ETF)</span>
+        <input id="avKey" type="password" placeholder="AV Key eingeben & speichern">
+      </label>
+      <button id="saveKeyBtn" class="btn">Key speichern</button>
+    </div>
+    <small class="hint">Hinweis: Feine Intervalle sind je Quelle begrenzt (z. B. CoinGecko minütlich nur ~1 Tag, Stooq nur täglich). Proxy in /api vermeidet CORS-Probleme.</small>
+  </section>
+
+  <section class="card">
+    <div class="tabs">
+      <button class="tab active" data-tab="crypto">Krypto</button>
+      <button class="tab" data-tab="equity">Aktien & ETF</button>
+    </div>
+
+    <div class="tabpanes">
+      <div class="pane active" id="pane-crypto">
+        <div class="searchbar">
+          <input id="qCrypto" type="search" inputmode="search" placeholder="Krypto suchen (live)…">
+        </div>
+        <ul id="cryptoResults" class="results"></ul>
+      </div>
+
+      <div class="pane" id="pane-equity">
+        <div class="searchbar">
+          <input id="qEquity" type="search" inputmode="search" placeholder="Aktien/ETF suchen (live)…">
+        </div>
+        <ul id="equityResults" class="results"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Auswahl</h2>
+    <div id="selectedChips" class="chips"></div>
+    <div class="row actions">
+      <button id="loadBtn" class="btn primary">Preisdaten laden</button>
+      <button id="exportBtn" class="btn">Export (.csv)</button>
+      <button id="resetBtn" class="btn danger ghost">Reset</button>
+    </div>
+    <div id="status" class="status"></div>
+    <div id="preview" class="tableWrap"></div>
+  </section>
+</main>
+
+<footer class="footer">PWA • Offline-fähige Oberfläche • IndexedDB Cache • Standalone auf iPhone</footer>
+
+<script src="./storage.js"></script>
+<script src="./export.js"></script>
+<script src="./providers.js"></script>
+<script src="./app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js');
+  }
+</script>
+</body>
+</html>
