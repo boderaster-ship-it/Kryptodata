@@ -1,4 +1,4 @@
-const CACHE = 'static-v2'; // Version bump, damit alte Dateien verworfen werden
+const CACHE = 'static-v3'; // Version bump
 const ASSETS = [
   './','./index.html','./style.css','./app.js','./providers.js','./storage.js','./export.js','./manifest.webmanifest','./icon-192.png','./icon-512.png'
 ];
