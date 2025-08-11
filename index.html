@@ -36,8 +36,10 @@
         <span>Datenabstand</span>
         <select id="intervalSel" title="Granularität (API-abhängig)">
           <option value="1m">1 Min</option>
+          <option value="2m">2 Min</option>
           <option value="5m" selected>5 Min</option>
           <option value="15m">15 Min</option>
+          <option value="30m">30 Min</option>
           <option value="1h">1 Std</option>
           <option value="4h">4 Std</option>
           <option value="1d">1 Tag</option>
@@ -50,7 +52,7 @@
       </label>
       <button id="saveKeyBtn" class="btn">Key speichern</button>
     </div>
-    <small class="hint">Hinweis: Feine Intervalle sind je Quelle begrenzt (z. B. CoinGecko minütlich nur ~1 Tag, Stooq nur täglich). Proxy in /api vermeidet CORS-Probleme.</small>
+    <small class="hint">Quellen: Binance, CoinGecko, Yahoo Finance (über Proxy), Stooq, optional Alpha Vantage. Feine Intervalle sind je Quelle begrenzt – das Tool mapped alles auf deine gewählten Buckets.</small>
   </section>
 
   <section class="card">
@@ -69,7 +71,7 @@
 
       <div class="pane" id="pane-equity">
         <div class="searchbar">
-          <input id="qEquity" type="search" inputmode="search" placeholder="Aktien/ETF suchen (live)…">
+          <input id="qEquity" type="search" inputmode="search" placeholder="Aktien/ETF/Fonds suchen (live)…">
         </div>
         <ul id="equityResults" class="results"></ul>
       </div>
@@ -89,9 +91,9 @@
   </section>
 </main>
 
-<footer class="footer">PWA • Offline-fähige Oberfläche • IndexedDB Cache • Standalone auf iPhone</footer>
+<footer class="footer">PWA • Offline • IndexedDB Cache • Standalone auf iPhone</footer>
 
-<!-- WICHTIG: nur EIN Modul laden -->
+<!-- Wichtig: nur EIN Modul laden -->
 <script type="module" src="./app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {
