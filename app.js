@@ -1,6 +1,20 @@
-import {searchCrypto, searchEquity, buildBuckets, fetchCryptoSeries, fetchEquitySeries, alignToBuckets} from './providers.js';
-import {buildCsv, downloadCsv} from './export.js';
-import {cacheSet} from './storage.js';
+// Fehler sichtbar machen
+window.addEventListener('error', (e)=>{
+  const box = document.querySelector('#status');
+  if(box) box.textContent = 'Fehler: ' + (e?.error?.message || e.message || 'Unbekannt');
+});
+window.addEventListener('unhandledrejection', (e)=>{
+  const box = document.querySelector('#status');
+  if(box) box.textContent = 'Async-Fehler: ' + (e?.reason?.message || String(e.reason));
+});
+
+// Module importieren
+import {
+  searchCrypto, searchEquity, buildBuckets,
+  fetchCryptoSeries, fetchEquitySeries, alignToBuckets
+} from './providers.js';
+import { buildCsv, downloadCsv } from './export.js';
+import { cacheSet } from './storage.js';
 
 const EL = sel => document.querySelector(sel);
 const state = {
@@ -23,13 +37,11 @@ function renderChips(){
     box.appendChild(chip);
   }
 }
-
 function addSelection(item){
   const key = item.id || item.symbol;
   if(state.selected.some(s=> (s.id||s.symbol)===key)) return;
   state.selected.push(item); renderChips();
 }
-
 function renderResults(list, ul){
   ul.innerHTML='';
   for(const it of list.slice(0,50)){
@@ -44,8 +56,6 @@ function renderResults(list, ul){
     ul.appendChild(li);
   }
 }
-
-// Debounce
 function debounce(fn, ms=300){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
 
 async function onSearchCrypto(){
@@ -58,11 +68,12 @@ async function onSearchEquity(){
   const res = await searchEquity(q, state.avKey);
   renderResults(res, EL('#equityResults'));
 }
-
 function switchTab(tab){
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
   document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('active', p.id===`pane-${tab}`));
 }
+
+let LAST_DATASET = null;
 
 async function loadData(){
   if(state.selected.length===0){ setStatus('Bitte zuerst Werte auswählen.'); return; }
@@ -72,7 +83,7 @@ async function loadData(){
   const cryptoSel = state.selected.filter(s=>s.type==='crypto');
   const eqSel     = state.selected.filter(s=>s.type==='equity');
 
-  const buckets = buildBuckets(state.range, state.interval);
+  const { buckets } = buildBuckets(state.range, state.interval);
   const seriesAll = [];
 
   if(cryptoSel.length){
@@ -84,11 +95,14 @@ async function loadData(){
     seriesAll.push(...es.series);
   }
 
-  const aligned = alignToBuckets(buckets.buckets, seriesAll);
+  const aligned = alignToBuckets(buckets, seriesAll);
+
   // Vorschau rendern
-  renderPreview(buckets.buckets, aligned);
-  // Cache für Export
-  await cacheSet('last-dataset', {timestamps: buckets.buckets, series: aligned, intervalLabel: state.interval, count: state.selected.length});
+  renderPreview(buckets, aligned);
+
+  // Dataset für Export direkt hier setzen (nicht aus DOM)
+  LAST_DATASET = { timestamps: buckets, series: aligned, intervalLabel: state.interval, count: state.selected.length };
+  await cacheSet('last-dataset', LAST_DATASET);
   setStatus('Fertig geladen.');
 }
 
@@ -107,22 +121,12 @@ function renderPreview(ts, aligned){
   tbl.appendChild(thead); tbl.appendChild(tb); wrap.appendChild(tbl);
 }
 
-async function doExport(){
-  const ds = await (await caches.open('static')).match('last-dataset'); // nicht geeignet -> wir haben in IndexedDB gespeichert
-  // Stattdessen holen aus cache via storage.js war einfacher, aber wir haben nur cacheSet dort.
-  // Pragmatik: Wir speichern zuletzt direkt an window:
-}
-
-window._lastDataset = null; // fallback
-async function exportNow(){
-  if(!window._lastDataset){
-    setStatus('Bitte zuerst „Preisdaten laden“.'); return;
-  }
-  const csv = buildCsv(window._lastDataset);
+function exportNow(){
+  if(!LAST_DATASET){ setStatus('Bitte zuerst „Preisdaten laden“.'); return; }
+  const csv = buildCsv(LAST_DATASET);
   downloadCsv(csv, 'preise_export.csv');
 }
 
-// Init
 function init(){
   // Events
   EL('#rangeSel').onchange = e => state.range = e.target.value;
@@ -139,30 +143,17 @@ function init(){
   EL('#qEquity').oninput = debounce(onSearchEquity, 300);
 
   document.querySelectorAll('.tab').forEach(b=> b.onclick = ()=>switchTab(b.dataset.tab));
-  EL('#loadBtn').onclick = async ()=>{
-    await loadData();
-    // baue LastDataset fürs Export
-    const {buckets} = buildBuckets(state.range, state.interval);
-    const previewTable = EL('#preview table');
-    // Wir haben aligned schon beim Render; bauen Dataset aus DOM zurück:
-    const timestamps = buckets;
-    const rows = Array.from(previewTable?.querySelectorAll('tbody tr')||[]);
-    const series = rows.map(r=>{
-      const tds = r.querySelectorAll('td');
-      return {label: tds[0].textContent, values: Array.from(tds).slice(1).map(td=> td.textContent ? Number(td.textContent.replace(',','.')) : null)};
-    });
-    window._lastDataset = {timestamps, series, intervalLabel: state.interval, count: state.selected.length};
-  };
+  EL('#loadBtn').onclick = loadData;
   EL('#exportBtn').onclick = exportNow;
   EL('#resetBtn').onclick = ()=>{
     state.selected = []; renderChips();
     EL('#cryptoResults').innerHTML=''; EL('#equityResults').innerHTML='';
     EL('#qCrypto').value=''; EL('#qEquity').value='';
-    EL('#preview').innerHTML=''; setStatus('Zurückgesetzt.');
+    EL('#preview').innerHTML=''; LAST_DATASET=null; setStatus('Zurückgesetzt.');
   };
 
-  // PWA Install (iOS zeigt Add-to-Home im Share-Sheet)
-  let deferredPrompt; window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); deferredPrompt=e; EL('#installBtn').hidden=false; });
-  EL('#installBtn').onclick = async ()=>{ if(deferredPrompt){ deferredPrompt.prompt(); deferredPrompt=null; EL('#installBtn').hidden=true; } };
+  // PWA Install (iOS: Add-to-Home im Share-Sheet)
+  let deferredPrompt; window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); deferredPrompt=e; const btn=EL('#installBtn'); if(btn) btn.hidden=false; });
+  EL('#installBtn')?.addEventListener('click', async ()=>{ if(deferredPrompt){ deferredPrompt.prompt(); deferredPrompt=null; EL('#installBtn').hidden=true; } });
 }
 document.addEventListener('DOMContentLoaded', init);
