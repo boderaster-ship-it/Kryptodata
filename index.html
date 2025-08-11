@@ -91,10 +91,8 @@
 
 <footer class="footer">PWA • Offline-fähige Oberfläche • IndexedDB Cache • Standalone auf iPhone</footer>
 
-<script src="./storage.js"></script>
-<script src="./export.js"></script>
-<script src="./providers.js"></script>
-<script src="./app.js"></script>
+<!-- WICHTIG: nur EIN Modul laden -->
+<script type="module" src="./app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js');
