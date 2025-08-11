@@ -1,4 +1,4 @@
-// Fehler sichtbar machen
+// Globale Fehler sichtbar machen
 window.addEventListener('error', (e)=>{
   const box = document.querySelector('#status');
   if(box) box.textContent = 'Fehler: ' + (e?.error?.message || e.message || 'Unbekannt');
@@ -13,7 +13,7 @@ import {
   searchCrypto, searchEquity, buildBuckets,
   fetchCryptoSeries, fetchEquitySeries, alignToBuckets
 } from './providers.js';
-import { buildCsv, downloadCsv } from './export.js';
+import { buildCsv, saveCsv } from './export.js';
 import { cacheSet } from './storage.js';
 
 const EL = sel => document.querySelector(sel);
@@ -44,12 +44,12 @@ function addSelection(item){
 }
 function renderResults(list, ul){
   ul.innerHTML='';
-  for(const it of list.slice(0,50)){
+  for(const it of list.slice(0,100)){
     const li = document.createElement('li');
     li.innerHTML = `
       <div>
         <div><strong>${it.symbol||it.id}</strong> – ${it.name||''}</div>
-        <div class="badge">${it.type}</div>
+        <div class="badge">${it.type}${it.region ? ' • '+it.region : ''}${it.currency ? ' • '+it.currency : ''}</div>
       </div>
       <button class="add">Hinzufügen</button>`;
     li.querySelector('.add').onclick=()=>addSelection(it);
@@ -100,7 +100,7 @@ async function loadData(){
   // Vorschau rendern
   renderPreview(buckets, aligned);
 
-  // Dataset für Export direkt hier setzen (nicht aus DOM)
+  // Dataset für Export
   LAST_DATASET = { timestamps: buckets, series: aligned, intervalLabel: state.interval, count: state.selected.length };
   await cacheSet('last-dataset', LAST_DATASET);
   setStatus('Fertig geladen.');
@@ -121,10 +121,10 @@ function renderPreview(ts, aligned){
   tbl.appendChild(thead); tbl.appendChild(tb); wrap.appendChild(tbl);
 }
 
-function exportNow(){
+async function exportNow(){
   if(!LAST_DATASET){ setStatus('Bitte zuerst „Preisdaten laden“.'); return; }
   const csv = buildCsv(LAST_DATASET);
-  downloadCsv(csv, 'preise_export.csv');
+  await saveCsv(csv, 'preise_export.csv'); // iPhone: Share-Sheet / „In Dateien sichern“
 }
 
 function init(){
