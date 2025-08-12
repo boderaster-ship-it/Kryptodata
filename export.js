@@ -10,11 +10,8 @@ function toCsvRow(arr){
 
 function buildPricesCsvBlock(dataset){
   const lines = [];
-  // Kopf
   lines.push(toCsvRow(['', ...dataset.timestamps.map(()=> 'Zeit')]));
-  // A2 = Anzahl; ab B2 ISO-TS
   lines.push(toCsvRow([dataset.count, ...dataset.timestamps.map(ts=> new Date(ts).toISOString())]));
-  // Assets
   for (const s of dataset.series){
     lines.push(toCsvRow([s.label, ...s.values]));
   }
@@ -33,13 +30,19 @@ function buildProcessedCsvBlock(dataset){
 
 function buildAnalysisCsvBlock(analysis){
   const lines = [];
-  lines.push(toCsvRow(['Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)']));
+  lines.push(toCsvRow(['Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)','Gewichtete Wahrscheinlichkeit (%)','Ø|ρ| Siegerfenster','Fenstergröße','|ρ|-Schwelle','Siege','Fenster']));
   if(analysis && analysis.rows){
     for(const r of analysis.rows){
       lines.push(toCsvRow([
         r.a, r.b,
         (r.probPct!=null ? r.probPct.toFixed(1).replace('.',',') : ''),
-        r.lag
+        r.lag,
+        (r.weightedProb!=null ? r.weightedProb.toFixed(1).replace('.',',') : ''),
+        (r.avgAbsR!=null ? r.avgAbsR.toFixed(4).replace('.',',') : ''),
+        r.win ?? '',
+        (typeof r.rhoMin==='number' ? r.rhoMin.toFixed(2).replace('.',',') : ''),
+        r.wins ?? '',
+        r.totalWins ?? ''
       ]));
     }
   }
@@ -48,13 +51,10 @@ function buildAnalysisCsvBlock(analysis){
 
 export function buildCsvWithProcessedAndAnalysis(dataset, analysis){
   const out = [];
-  // Preise
   out.push(...buildPricesCsvBlock(dataset));
-  out.push(''); // Leerzeile
-  // Prozent-Veränderung
+  out.push('');
   out.push(...buildProcessedCsvBlock(dataset));
   out.push('');
-  // Analyse (falls vorhanden)
   out.push(...buildAnalysisCsvBlock(analysis || {rows:[]}));
   return out.join('\n');
 }
@@ -123,7 +123,7 @@ function buildProcessedWorksheetXml(dataset){
 }
 
 function buildLeadLagWorksheetXml(analysis){
-  const header = ['Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)'];
+  const header = ['Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)','Gewichtete Wahrscheinlichkeit (%)','Ø|ρ| Siegerfenster','Fenstergröße','|ρ|-Schwelle','Siege','Fenster'];
   const rows = [];
   rows.push(`<Row>${header.map(h=>`<Cell><Data ss:Type="String">${xmlEscape(h)}</Data></Cell>`).join('')}</Row>`);
   if(analysis && analysis.rows){
@@ -132,7 +132,13 @@ function buildLeadLagWorksheetXml(analysis){
         `<Cell><Data ss:Type="String">${xmlEscape(r.a||'')}</Data></Cell>`,
         `<Cell><Data ss:Type="String">${xmlEscape(r.b||'')}</Data></Cell>`,
         `<Cell><Data ss:Type="Number">${(r.probPct!=null? r.probPct.toFixed(1) : '')}</Data></Cell>`,
-        `<Cell><Data ss:Type="Number">${r.lag!=null? r.lag : ''}</Data></Cell>`
+        `<Cell><Data ss:Type="Number">${r.lag!=null? r.lag : ''}</Data></Cell>`,
+        `<Cell><Data ss:Type="Number">${(r.weightedProb!=null? r.weightedProb.toFixed(1) : '')}</Data></Cell>`,
+        `<Cell><Data ss:Type="Number">${(r.avgAbsR!=null? r.avgAbsR.toFixed(4) : '')}</Data></Cell>`,
+        `<Cell><Data ss:Type="Number">${(r.win!=null? r.win : '')}</Data></Cell>`,
+        `<Cell><Data ss:Type="Number">${(typeof r.rhoMin==='number'? r.rhoMin.toFixed(2) : '')}</Data></Cell>`,
+        `<Cell><Data ss:Type="Number">${(r.wins!=null? r.wins : '')}</Data></Cell>`,
+        `<Cell><Data ss:Type="Number">${(r.totalWins!=null? r.totalWins : '')}</Data></Cell>`
       ];
       rows.push(`<Row>${cells.join('')}</Row>`);
     }
