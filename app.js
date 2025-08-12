@@ -13,7 +13,7 @@ import {
   searchCrypto, searchEquity, buildBuckets,
   fetchCryptoSeries, fetchEquitySeries, alignToBuckets
 } from './providers.js';
-import { buildCsv, saveCsv, downloadCsvDirect } from './export.js';
+import { buildCsvWithAnalysis, saveCsv, downloadCsvDirect, buildXlsXml, saveXls } from './export.js';
 import { cacheSet } from './storage.js';
 
 const EL = sel => document.querySelector(sel);
@@ -25,7 +25,9 @@ const state = {
   equity: { enabled: false, range: '1d', interval: '5m' }
 };
 
-let LAST_DATASET = null; // {timestamps, series, intervalLabel, count, meta:{type}}
+let LAST_DATASET = null;   // {timestamps, series:[{label,values}] , intervalLabel, count, meta:{type}}
+let LAST_ANALYSIS = null;  // [{a,b,probPct,lag,r,n,dir}...]
+
 function setStatus(msg){ EL('#status').textContent = msg || ''; }
 function setCurrencyNote(){
   const note = EL('#currencyNote');
@@ -39,7 +41,7 @@ function setCurrencyNote(){
   }
 }
 
-// Ergebnisse/Chips
+// Chips / Auswahl
 function renderChips(){
   const box = EL('#selectedChips'); box.innerHTML='';
   for(const it of state.selected){
@@ -57,22 +59,19 @@ function enforceTypeConstraints(){
   const hasCrypto = state.selected.some(s=>s.type==='crypto');
   const hasEquity = state.selected.some(s=>s.type==='equity');
 
-  // Mischen verhindern: nicht gleichzeitig Krypto & Aktien
   if(hasCrypto && hasEquity){
     setStatus('Bitte nicht mischen: Entferne erst die vorhandene Auswahl, bevor du den anderen Typ auswählst.');
   }
-  // Equity-UI je nach Toggle
+
   const equityEnabled = state.equity.enabled;
   EL('#qEquity').disabled = !equityEnabled;
   EL('#rangeEquitySel').disabled = !equityEnabled;
   EL('#intervalEquitySel').disabled = !equityEnabled;
 
-  // Tab „Aktien“ visuell sperren, wenn deaktiviert
   const equityTabBtn = document.querySelector('.tab[data-tab="equity"]');
   if(equityTabBtn) equityTabBtn.style.opacity = equityEnabled ? '1' : '0.5';
 }
 
-// Auswahl & Suche
 function addSelection(item){
   const key = item.id || item.symbol;
   if(state.selected.some(s=> (s.id||s.symbol)===key)) return;
@@ -116,7 +115,6 @@ async function onSearchEquity(){
   const res = await searchEquity(q);
   renderResults(res, EL('#equityResults'));
 }
-
 function switchTab(tab){
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
   document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('active', p.id===`pane-${tab}`));
@@ -124,7 +122,7 @@ function switchTab(tab){
 
 // Daten laden
 async function loadData(){
-  EL('#analysis').textContent = ''; // Analyse leeren
+  EL('#analysis').innerHTML = ''; LAST_ANALYSIS = null;
   if(state.selected.length===0){ setStatus('Bitte zuerst Werte auswählen.'); return; }
   const typ = state.selected[0].type;
   if(typ==='equity' && !state.equity.enabled){
@@ -166,7 +164,7 @@ async function loadData(){
   setCurrencyNote();
 }
 
-// Tabelle
+// Tabelle Preise
 function renderPreview(ts, aligned){
   const wrap = EL('#preview'); wrap.innerHTML='';
   const tbl = document.createElement('table');
@@ -182,7 +180,9 @@ function renderPreview(ts, aligned){
   tbl.appendChild(thead); tbl.appendChild(tb); wrap.appendChild(tbl);
 }
 
-// Lead/Lag Analyse (diskrete Kreuz-Korrelation der Log-Renditen)
+// ---------- Lead/Lag (robust, resid.) ----------
+
+// Log-Renditen
 function logReturns(arr){
   const out = new Array(arr.length).fill(null);
   for(let i=1;i<arr.length;i++){
@@ -195,97 +195,206 @@ function logReturns(arr){
   }
   return out;
 }
+
+// Hilfe: Median & MAD
+function median(vals){
+  const a = vals.slice().sort((x,y)=>x-y);
+  const n = a.length; if(n===0) return NaN;
+  return n%2 ? a[(n-1)/2] : 0.5*(a[n/2-1]+a[n/2]);
+}
+function mad(vals){
+  if(vals.length===0) return NaN;
+  const m = median(vals);
+  const dev = vals.map(v=> Math.abs(v-m));
+  return median(dev);
+}
+
+// Normal CDF via erf-Approx
+function erf(x){
+  // Abramowitz-Stegun 7.1.26
+  const sign = x<0 ? -1 : 1;
+  const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+  x = Math.abs(x);
+  const t = 1/(1+p*x);
+  const y = 1 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*Math.exp(-x*x);
+  return sign*y;
+}
+function normalCdf(z){ return 0.5*(1+erf(z/Math.SQRT2)); }
+
+// Fisher-z p-Wert (z ~ N(0,1) für n>25)
+function fisherP(r, n){
+  if(!Number.isFinite(r) || n<5) return 1.0;
+  const z = 0.5*Math.log((1+r)/(1-r)) * Math.sqrt(Math.max(1, n-3));
+  const p = 2*(1-normalCdf(Math.abs(z))); // zweiseitig
+  return Math.min(1, Math.max(0, p));
+}
+
+// Residualisierung gg. Marktfaktor (Cross-Section Median)
+function residualize(returnsMatrix){
+  // returnsMatrix: Array<N_assets> of arrays length T with nulls
+  const N = returnsMatrix.length; if(N===0) return returnsMatrix;
+  const T = returnsMatrix[0].length;
+
+  // 1) robuste Normierung pro Asset (MAD über ganze Serie)
+  const Rtilde = returnsMatrix.map(r=>{
+    const valid = r.filter(v=> v!=null && Number.isFinite(v));
+    const s = mad(valid)*1.4826 || 0; // MAD->sigma
+    const scale = (s && Number.isFinite(s) && s>1e-12) ? s : ( // fallback: std
+      (()=>{
+        const m = valid.reduce((a,b)=>a+b,0)/Math.max(1,valid.length);
+        const v = valid.reduce((a,b)=>a+(b-m)*(b-m),0)/Math.max(1,valid.length-1);
+        return Math.sqrt(Math.max(1e-12, v));
+      })()
+    );
+    return r.map(x=> (x==null? null : x/scale));
+  });
+
+  // 2) Marktfaktor f_t = Median_t über Assets (robust)
+  const f = new Array(T).fill(null);
+  for(let t=0;t<T;t++){
+    const vals=[]; for(let i=0;i<N;i++){ const v = Rtilde[i][t]; if(v!=null && Number.isFinite(v)) vals.push(v); }
+    f[t] = vals.length ? median(vals) : null;
+  }
+
+  // 3) OLS-Beta je Asset gegen f (über alle t mit Daten) und Residuen ε = r~ - β f
+  const E = Rtilde.map(r=>{
+    let num=0, den=0;
+    const fx=[], rx=[];
+    for(let t=0;t<T;t++){
+      const ft = f[t], rt = r[t];
+      if(ft!=null && rt!=null && Number.isFinite(ft) && Number.isFinite(rt)){
+        fx.push(ft); rx.push(rt);
+      }
+    }
+    if(fx.length>=5){
+      const mx = fx.reduce((a,b)=>a+b,0)/fx.length;
+      const my = rx.reduce((a,b)=>a+b,0)/rx.length;
+      for(let k=0;k<fx.length;k++){
+        const dx = fx[k]-mx; const dy = rx[k]-my;
+        num += dx*dy; den += dx*dx;
+      }
+    }
+    const beta = (den>0) ? (num/den) : 0;
+    return r.map((rt, t)=> {
+      const ft = f[t];
+      if(rt==null || ft==null || !Number.isFinite(rt) || !Number.isFinite(ft)) return rt; // wenn f fehlt: keine Korrektur
+      return rt - beta*ft;
+    });
+  });
+
+  return E;
+}
+
+// Korrelation bei Lag
 function corrAtLag(r1, r2, lag){
-  // vergleiche r1[t] mit r2[t+lag]
   let xs=[], ys=[];
   for(let t=0;t<r1.length;t++){
     const u = r1[t];
     const vIdx = t+lag;
     if(vIdx<0 || vIdx>=r2.length) continue;
     const v = r2[vIdx];
-    if(u!=null && v!=null){ xs.push(u); ys.push(v); }
+    if(u!=null && v!=null && Number.isFinite(u) && Number.isFinite(v)){ xs.push(u); ys.push(v); }
   }
   const n = xs.length;
   if(n<5) return {n, r: NaN};
   const mean = a => a.reduce((s,x)=>s+x,0)/a.length;
   const mx = mean(xs), my=mean(ys);
   let num=0, dx=0, dy=0;
-  for(let i=0;i<n;i++){
-    const ax = xs[i]-mx, ay=ys[i]-my;
-    num += ax*ay; dx += ax*ax; dy += ay*ay;
-  }
+  for(let i=0;i<n;i++){ const ax=xs[i]-mx, ay=ys[i]-my; num+=ax*ay; dx+=ax*ax; dy+=ay*ay; }
   const r = (dx===0 || dy===0) ? NaN : (num/Math.sqrt(dx*dy));
   return {n, r};
 }
+
+// Analyse durchführen + UI-Tabelle + Export-Daten
 function analyzeLeadLag(){
-  EL('#analysis').textContent='';
   if(!LAST_DATASET){ setStatus('Bitte zuerst „Preisdaten laden“.'); return; }
   const { series, intervalLabel } = LAST_DATASET;
-  if(series.length<2){ EL('#analysis').textContent='Mindestens 2 Assets nötig für Lead/Lag.'; return; }
+  if(series.length<2){ EL('#analysis').innerHTML='<div class="hint">Mindestens 2 Assets nötig.</div>'; return; }
 
-  // Log-Renditen je Serie
+  // 1) Log-Renditen je Serie
   const R = series.map(s=> ({label: s.label, r: logReturns(s.values)}));
-  // Lag-Bereich (±maxLag)
-  const N = series[0].values.length;
-  const maxLag = Math.max(1, Math.min(20, Math.floor(N/4)));
+
+  // 2) Residualisierung gg. Marktfaktor (robuste Normierung + OLS-Faktor)
+  const returnsMatrix = R.map(x=> x.r);
+  const E = residualize(returnsMatrix);
+
+  // 3) Lags scannen
+  const T = E[0].length;
+  const maxLag = Math.max(1, Math.min(20, Math.floor(T/4)));
 
   const results = [];
-  for(let i=0;i<R.length;i++){
-    for(let j=i+1;j<R.length;j++){
+  for(let i=0;i<E.length;i++){
+    for(let j=i+1;j<E.length;j++){
       let best = {lag:0, r:NaN, n:0};
       for(let lag=-maxLag; lag<=maxLag; lag++){
-        const {n, r} = corrAtLag(R[i].r, R[j].r, lag);
+        const {n, r} = corrAtLag(E[i], E[j], lag);
         if(!Number.isFinite(r)) continue;
         if(!Number.isFinite(best.r) || Math.abs(r) > Math.abs(best.r)){
           best = {lag, r, n};
         }
       }
-      // Interpretation: corr(r_i[t], r_j[t+lag]). lag>0 => i führt j um lag Intervalle
-      const direction = best.lag>0 ? `${R[i].label} führt ${R[j].label}` :
-                         best.lag<0 ? `${R[j].label} führt ${R[i].label}` :
-                         'Kein Vorlauf (lag=0)';
-      const absLag = Math.abs(best.lag);
+      // Richtung & Wahrscheinlichkeit
+      const leading = best.lag>0 ? R[i].label : (best.lag<0 ? R[j].label : '—');
+      const following= best.lag>0 ? R[j].label : (best.lag<0 ? R[i].label : '—');
+      const absLag  = Math.abs(best.lag);
+      const p = fisherP(best.r, best.n);
+      const probPct = Math.round((1-p)*1000)/10; // eine Nachkommastelle
+
       results.push({
-        pair: `${R[i].label} ↔ ${R[j].label}`,
-        direction,
-        lag: absLag,
-        r: best.r,
-        n: best.n
+        a: leading, b: following, lag: absLag, r: best.r, n: best.n,
+        probPct, dir: best.lag
       });
     }
   }
-  // sortiere nach |r| absteigend
-  results.sort((a,b)=> Math.abs(b.r) - Math.abs(a.r));
+  // Sortiere nach Wahrscheinlichkeit, dann |r|
+  results.sort((x,y)=> (y.probPct - x.probPct) || (Math.abs(y.r)-Math.abs(x.r)));
 
-  // Ausgabe (Text)
-  const ivTextMap = {'1m':'1 Minute','2m':'2 Minuten','5m':'5 Minuten','15m':'15 Minuten','30m':'30 Minuten','1h':'1 Stunde','4h':'4 Stunden','1d':'1 Tag','1w':'1 Woche'};
-  const ivText = ivTextMap[intervalLabel] || intervalLabel;
-  const lines = [];
-  lines.push(`Lead/Lag-Analyse (diskrete Kreuz-Korrelation der Log-Renditen; 1 Lag = ${ivText}).`);
+  LAST_ANALYSIS = { interval: intervalLabel, rows: results };
+
+  // 4) UI: Tabelle anzeigen (A,B,C,D)
+  const box = EL('#analysis'); box.innerHTML='';
+  const tbl = document.createElement('table');
+  const thead = document.createElement('thead'); const trh = document.createElement('tr');
+  trh.innerHTML = ['Währung A (führt)', 'Währung B', 'Wahrscheinlichkeit (%)', 'Vorlauf (Lags)'].map(h=>`<th>${h}</th>`).join('');
+  thead.appendChild(trh);
+  const tb = document.createElement('tbody');
   for(const r of results){
-    const pct = (r.r*100).toFixed(1).replace('.',',') + '%';
-    const lagTxt = r.lag===0 ? '0' : String(r.lag);
-    lines.push(`• ${r.direction} um ${lagTxt} Lag(s) – ρ = ${pct} (N=${r.n})`);
+    const tr = document.createElement('tr');
+    tr.innerHTML = [
+      `<td>${r.a}</td>`,
+      `<td>${r.b}</td>`,
+      `<td>${r.probPct.toFixed(1).replace('.',',')}</td>`,
+      `<td>${r.lag}</td>`
+    ].join('');
+    tb.appendChild(tr);
   }
-  lines.push('Hinweis: Methode angelehnt an High-Frequency-Lead/Lag-Analysen (z. B. Hayashi-Yoshida/Cross-Correlation); hier diskret auf gebucketeten Daten umgesetzt.');
-  EL('#analysis').textContent = lines.join('\n');
+  tbl.appendChild(thead); tbl.appendChild(tb); box.appendChild(tbl);
+
+  setStatus(`Analyse fertig. 1 Lag = ${intervalLabel}.`);
 }
 
-// Export
+// ---------- Export ----------
+
 async function doExportShare(){
   if(!LAST_DATASET){ setStatus('Bitte zuerst „Preisdaten laden“.'); return; }
-  const csv = buildCsv(LAST_DATASET);
-  await saveCsv(csv, 'preise_export.csv'); // iPhone: Share-Sheet / In Dateien sichern
+  // CSV enthält zuerst Preise, dann Analyse (falls vorhanden)
+  const csv = buildCsvWithAnalysis(LAST_DATASET, LAST_ANALYSIS);
+  await saveCsv(csv, 'preise_und_leadlag.csv'); // iPhone: Share-Sheet / In Dateien sichern
+}
+async function doExportXls(){
+  if(!LAST_DATASET){ setStatus('Bitte zuerst „Preisdaten laden“.'); return; }
+  const xml = buildXlsXml(LAST_DATASET, LAST_ANALYSIS); // 2 Worksheets
+  await saveXls(xml, 'preise_und_leadlag.xls');
 }
 function doExportDirect(){
   if(!LAST_DATASET){ setStatus('Bitte zuerst „Preisdaten laden“.'); return; }
-  const csv = buildCsv(LAST_DATASET);
-  downloadCsvDirect(csv, 'preise_export.csv'); // klassischer Download (Laptop/Desktop)
+  const csv = buildCsvWithAnalysis(LAST_DATASET, LAST_ANALYSIS);
+  downloadCsvDirect(csv, 'preise_und_leadlag.csv'); // klassischer Download (Laptop/Desktop)
 }
 
-// Init UI
+// ---------- Init ----------
 function init(){
-  // Settings Events
+  // Settings
   EL('#rangeCryptoSel').onchange = e => state.crypto.range = e.target.value;
   EL('#intervalCryptoSel').onchange = e => state.crypto.interval = e.target.value;
 
@@ -308,14 +417,16 @@ function init(){
   EL('#loadBtn').onclick = loadData;
   EL('#analyzeBtn').onclick = analyzeLeadLag;
   EL('#exportBtn').onclick = doExportShare;
-  // Direkt-Download nur zeigen, wenn nicht iOS
+  EL('#exportXlsBtn').onclick = doExportXls;
+
+  // Direkt-Download nur zeigen, wenn nicht iOS (iOS: Share-Sheet besser)
   if(!isIOS){ EL('#directDownloadBtn').hidden = false; EL('#directDownloadBtn').onclick = doExportDirect; }
 
   EL('#resetBtn').onclick = ()=>{
     state.selected = []; renderChips(); enforceTypeConstraints();
     EL('#cryptoResults').innerHTML=''; EL('#equityResults').innerHTML='';
     EL('#qCrypto').value=''; EL('#qEquity').value='';
-    EL('#preview').innerHTML=''; EL('#analysis').textContent=''; LAST_DATASET=null; setCurrencyNote(); setStatus('Zurückgesetzt.');
+    EL('#preview').innerHTML=''; EL('#analysis').innerHTML=''; LAST_DATASET=null; LAST_ANALYSIS=null; setCurrencyNote(); setStatus('Zurückgesetzt.');
   };
 
   // PWA Install (iOS: Add-to-Home im Share-Sheet)
