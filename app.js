@@ -26,7 +26,7 @@ const state = {
 };
 
 let LAST_DATASET = null;   // {timestamps, series:[{label,values}], seriesProcessed:[{label,values}], intervalLabel, count, meta:{type}}
-let LAST_ANALYSIS = null;  // {interval, rows:[{a,b,probPct,lag}]}
+let LAST_ANALYSIS = null;  // {interval, rows:[{a,b,probPct,lag,weightedProb,avgAbsR,wins,totalWins,win,rhoMin}]}
 
 function setStatus(msg){ EL('#status').textContent = msg || ''; }
 function setCurrencyNote(){
@@ -108,7 +108,7 @@ async function loadData(){
     ? {range: state.crypto.range, interval: state.crypto.interval}
     : {range: state.equity.range, interval: state.equity.interval};
 
-  const { buckets } = buildBuckets(settings.range, settings.interval);
+  const { buckets, iv } = buildBuckets(settings.range, settings.interval);
   const seriesAll = [];
 
   if(typ==='crypto'){
@@ -119,23 +119,23 @@ async function loadData(){
     seriesAll.push(...es.series);
   }
 
-  const aligned = alignToBuckets(buckets, seriesAll);
+  const aligned = alignToBuckets(buckets, seriesAll, {iv});
 
   // Tabelle 1: Preise
   renderPreview(buckets, aligned);
 
-  // Tabelle 2: Prozent-Veränderung (zum Vorwert, Basis = VORWERT selbst!)
+  // Tabelle 2: Prozent-Veränderung zum Vorwert (klassisch), erste gültige = 0, davor leer
   const processed = buildPercentChangePrev(aligned);
   renderProcessed(buckets, processed);
 
-  // Dataset für Export & Analyse
   LAST_DATASET = {
     timestamps: buckets,
     series: aligned,
     seriesProcessed: processed,
     intervalLabel: settings.interval,
     count: state.selected.length,
-    meta: { type: typ }
+    meta: { type: typ },
+    iv
   };
   await cacheSet('last-dataset', LAST_DATASET);
   setStatus('Fertig geladen.');
@@ -158,7 +158,7 @@ function renderPreview(ts, aligned){
   tbl.appendChild(thead); tbl.appendChild(tb); wrap.appendChild(tbl);
 }
 
-// Tabelle 2: Prozent-Veränderung zum VORWERT (klassisch), erste gültige = 0
+// Tabelle 2: Prozent-Veränderung zum Vorwert (klassisch)
 function buildPercentChangePrev(aligned){
   return aligned.map(s=>{
     const vals = s.values;
@@ -169,7 +169,7 @@ function buildPercentChangePrev(aligned){
     for(let i=0;i<vals.length;i++){ if(vals[i]!=null && Number.isFinite(vals[i])){ i0=i; break; } }
     if(i0===-1) return {label:s.label, values: out};
 
-    out[i0] = 0;
+    out[i0] = 0; // erste gültige Zelle = 0
     for(let i=i0+1;i<vals.length;i++){
       const prev = vals[i-1], cur = vals[i];
       if(prev!=null && cur!=null && Number.isFinite(prev) && Number.isFinite(cur) && prev!==0){
@@ -196,9 +196,7 @@ function renderProcessed(ts, processed){
   tbl.appendChild(thead); tbl.appendChild(tb); wrap.appendChild(tbl);
 }
 
-// ---------- Analyse: Häufigkeits-basierter Lead/Lag ----------
-
-// Korrelation im Fenster bei fixem Lag
+// ---------- Analyse: Häufigkeits-basierter Lead/Lag mit Schwelle & Gewichtung ----------
 function corrWindowAtLag(a, b, lag, start, end){
   let xs=[], ys=[];
   for(let t=start; t<=end; t++){
@@ -225,26 +223,33 @@ function analyzeLeadLag(){
   const { seriesProcessed, intervalLabel } = LAST_DATASET;
   if(!seriesProcessed || seriesProcessed.length<2){ EL('#analysis').innerHTML='<div class="hint">Mindestens 2 Assets nötig.</div>'; return; }
 
+  const MAX_LAG = 10;
   const N = seriesProcessed[0].values.length;
-  const MAX_LAG = 10;                // (fix laut Spezifikation)
-  let   WIN = Math.max(20, 3*MAX_LAG);
+  // Fenstergröße & Schwelle aus UI
+  const winSel = parseInt(EL('#winSel').value, 10) || 60;
+  const rhoMin = Math.max(0, Math.min(1, parseFloat(EL('#rhoMin').value)||0));
+  const useWeighted = EL('#useWeighted').checked;
+
+  let WIN = winSel;
   WIN = Math.min(WIN, Math.max(10, N - MAX_LAG)); // bei kurzen Reihen schrumpfen
-  const MIN_N = 10; // minimale Effektiv-Stichprobe je Fenster/Lag
+  const MIN_N = 10;
 
   const tStart = Math.max(WIN-1 + MAX_LAG, 0);
   const tEnd   = Math.min(N-1 - MAX_LAG, N-1);
-  const totalWindowsNominal = Math.max(0, tEnd - tStart + 1);
 
   const results = [];
 
   for(let i=0;i<seriesProcessed.length;i++){
     for(let j=i+1;j<seriesProcessed.length;j++){
-      // Zähler für alle Lags
-      const counts = new Map();
-      for(let l=-MAX_LAG; l<=MAX_LAG; l++){ if(l!==0) counts.set(l,0); }
+      const counts = new Map();               // ungewichtet
+      const wCounts = new Map();              // gewichtet mit |r|
+      const sumAbsR = new Map();              // Summe |r| für Siegerlag
+      const cntAbsR = new Map();              // Anzahl Siegerfenster je Lag
+      for(let l=-MAX_LAG; l<=MAX_LAG; l++){ if(l!==0){ counts.set(l,0); wCounts.set(l,0); sumAbsR.set(l,0); cntAbsR.set(l,0);} }
       let totalWins = 0;
+      let totalWeight = 0;
 
-      if(totalWindowsNominal>0){
+      if(tEnd >= tStart){
         for(let t=tStart; t<=tEnd; t++){
           const start = t - WIN + 1, end = t;
           let bestLag = null, bestAbs = -1;
@@ -254,11 +259,16 @@ function analyzeLeadLag(){
             const {n, r} = corrWindowAtLag(seriesProcessed[i].values, seriesProcessed[j].values, l, start, end);
             if(n < MIN_N || !Number.isFinite(r)) continue;
             const ar = Math.abs(r);
+            if(ar < rhoMin) continue; // Schwelle
             if(ar > bestAbs){ bestAbs = ar; bestLag = l; }
           }
           if(bestLag!==null){
             counts.set(bestLag, counts.get(bestLag)+1);
+            wCounts.set(bestLag, wCounts.get(bestLag)+bestAbs);
+            sumAbsR.set(bestLag, sumAbsR.get(bestLag)+bestAbs);
+            cntAbsR.set(bestLag, cntAbsR.get(bestLag)+1);
             totalWins++;
+            totalWeight += bestAbs;
           }
         }
       }
@@ -270,21 +280,33 @@ function analyzeLeadLag(){
       }
       const probPct = totalWins>0 ? (cntBest/totalWins)*100 : 0;
 
-      // Richtung ableiten
+      // Gewichtete Wahrscheinlichkeit & Ø|r|
+      const wTotal = Array.from(wCounts.values()).reduce((a,b)=>a+b,0);
+      const weightedProb = (wTotal>0) ? ( (wCounts.get(lagBest)||0) / wTotal * 100 ) : 0;
+      const avgAbsR = (cntAbsR.get(lagBest)||0) ? (sumAbsR.get(lagBest)/cntAbsR.get(lagBest)) : 0;
+
       const leading = lagBest>0 ? seriesProcessed[i].label : (lagBest<0 ? seriesProcessed[j].label : seriesProcessed[i].label);
       const following= lagBest>0 ? seriesProcessed[j].label : (lagBest<0 ? seriesProcessed[i].label : seriesProcessed[j].label);
       const absLag  = Math.abs(lagBest);
 
-      results.push({ a: leading, b: following, probPct: Math.round(probPct*10)/10, lag: absLag, totalWins });
+      results.push({
+        a: leading, b: following,
+        probPct: Math.round(probPct*10)/10,
+        lag: absLag,
+        weightedProb: Math.round(weightedProb*10)/10,
+        avgAbsR: Number(avgAbsR.toFixed(4)),
+        wins: cntBest, totalWins,
+        win: WIN, rhoMin
+      });
     }
   }
 
-  // Sortierung: erst Wahrscheinlichkeit, dann Lag (kleiner ist praxisnäher)
-  results.sort((x,y)=> (y.probPct - x.probPct) || (x.lag - y.lag));
+  // Sortierung: erst Wahrscheinlichkeit, dann gewichtete %, dann kleiner Lag
+  results.sort((x,y)=> (y.probPct - x.probPct) || (y.weightedProb - x.weightedProb) || (x.lag - y.lag));
 
   LAST_ANALYSIS = { interval: intervalLabel, rows: results };
 
-  // UI-Tabelle
+  // UI-Tabelle (bewusst schlank wie gefordert)
   const box = EL('#analysis'); box.innerHTML='';
   const tbl = document.createElement('table');
   const thead = document.createElement('thead'); const trh = document.createElement('tr');
@@ -303,7 +325,7 @@ function analyzeLeadLag(){
   }
   tbl.appendChild(thead); tbl.appendChild(tb); box.appendChild(tbl);
 
-  setStatus(`Analyse fertig. Grundlage: Prozent-Veränderung zum VORWERT. 1 Lag = ${intervalLabel}. Fenstergröße ~ ${WIN}, Fenster gesamt: ${results.length ? (results[0].totalWins||0) : 0}.`);
+  setStatus(`Analyse fertig. 1 Lag = ${intervalLabel}. Fenster=${results[0]?.win||'-'}, |ρ|≥${(results[0]?.rhoMin??0).toFixed(2)}. (Gewichtete % & Ø|ρ| im Export)`);
 }
 
 // ---------- Export ----------
