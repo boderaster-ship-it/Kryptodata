@@ -30,7 +30,12 @@ function buildProcessedCsvBlock(dataset){
 
 function buildAnalysisCsvBlock(analysis){
   const lines = [];
-  lines.push(toCsvRow(['Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)','Gewichtete Wahrscheinlichkeit (%)','Ø|ρ| Siegerfenster','Fenstergröße','|ρ|-Schwelle','Siege','Fenster']));
+  lines.push(toCsvRow([
+    'Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)',
+    'Gewichtete Wahrscheinlichkeit (%)','Ø|ρ| Siegerfenster',
+    'Bewertung (1-5)','Urteil',
+    'Fenstergröße','|ρ|-Schwelle','Siege','Fenster'
+  ]));
   if(analysis && analysis.rows){
     for(const r of analysis.rows){
       lines.push(toCsvRow([
@@ -39,11 +44,21 @@ function buildAnalysisCsvBlock(analysis){
         r.lag,
         (r.weightedProb!=null ? r.weightedProb.toFixed(1).replace('.',',') : ''),
         (r.avgAbsR!=null ? r.avgAbsR.toFixed(4).replace('.',',') : ''),
+        r.score ?? '',
+        r.verdict ?? '',
         r.win ?? '',
         (typeof r.rhoMin==='number' ? r.rhoMin.toFixed(2).replace('.',',') : ''),
         r.wins ?? '',
         r.totalWins ?? ''
       ]));
+    }
+  }
+  // Summary / Kontrollmechanismus
+  if(analysis && analysis.meta){
+    lines.push('');
+    lines.push(toCsvRow(['Finale Bewertung', analysis.meta.finalScore, analysis.meta.finalVerdict]));
+    if(analysis.meta.recommendations && analysis.meta.recommendations.length){
+      lines.push(toCsvRow(['Empfehlungen']).concat(analysis.meta.recommendations));
     }
   }
   return lines;
@@ -123,7 +138,12 @@ function buildProcessedWorksheetXml(dataset){
 }
 
 function buildLeadLagWorksheetXml(analysis){
-  const header = ['Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)','Gewichtete Wahrscheinlichkeit (%)','Ø|ρ| Siegerfenster','Fenstergröße','|ρ|-Schwelle','Siege','Fenster'];
+  const header = [
+    'Währung A (führt)','Währung B','Wahrscheinlichkeit (%)','Vorlauf (Lags)',
+    'Gewichtete Wahrscheinlichkeit (%)','Ø|ρ| Siegerfenster',
+    'Bewertung (1-5)','Urteil',
+    'Fenstergröße','|ρ|-Schwelle','Siege','Fenster'
+  ];
   const rows = [];
   rows.push(`<Row>${header.map(h=>`<Cell><Data ss:Type="String">${xmlEscape(h)}</Data></Cell>`).join('')}</Row>`);
   if(analysis && analysis.rows){
@@ -135,12 +155,21 @@ function buildLeadLagWorksheetXml(analysis){
         `<Cell><Data ss:Type="Number">${r.lag!=null? r.lag : ''}</Data></Cell>`,
         `<Cell><Data ss:Type="Number">${(r.weightedProb!=null? r.weightedProb.toFixed(1) : '')}</Data></Cell>`,
         `<Cell><Data ss:Type="Number">${(r.avgAbsR!=null? r.avgAbsR.toFixed(4) : '')}</Data></Cell>`,
+        `<Cell><Data ss:Type="Number">${(r.score!=null? r.score : '')}</Data></Cell>`,
+        `<Cell><Data ss:Type="String">${xmlEscape(r.verdict||'')}</Data></Cell>`,
         `<Cell><Data ss:Type="Number">${(r.win!=null? r.win : '')}</Data></Cell>`,
         `<Cell><Data ss:Type="Number">${(typeof r.rhoMin==='number'? r.rhoMin.toFixed(2) : '')}</Data></Cell>`,
         `<Cell><Data ss:Type="Number">${(r.wins!=null? r.wins : '')}</Data></Cell>`,
         `<Cell><Data ss:Type="Number">${(r.totalWins!=null? r.totalWins : '')}</Data></Cell>`
       ];
       rows.push(`<Row>${cells.join('')}</Row>`);
+    }
+  }
+  // Summary
+  if(analysis && analysis.meta){
+    rows.push(`<Row><Cell><Data ss:Type="String">Finale Bewertung</Data></Cell><Cell><Data ss:Type="Number">${analysis.meta.finalScore||''}</Data></Cell><Cell><Data ss:Type="String">${xmlEscape(analysis.meta.finalVerdict||'')}</Data></Cell></Row>`);
+    if(analysis.meta.recommendations && analysis.meta.recommendations.length){
+      rows.push(`<Row><Cell><Data ss:Type="String">Empfehlungen</Data></Cell>${analysis.meta.recommendations.map(t=>`<Cell><Data ss:Type="String">${xmlEscape(t)}</Data></Cell>`).join('')}</Row>`);
     }
   }
   return `<Worksheet ss:Name="LeadLag"><Table>${rows.join('')}</Table></Worksheet>`;
