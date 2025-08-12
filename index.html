@@ -119,9 +119,29 @@
   </section>
 
   <section class="card">
-    <h2>Auswahl</h2>
+    <h2>Auswahl & Analyse</h2>
     <div id="selectedChips" class="chips"></div>
-    <div class="row actions">
+
+    <div class="row" style="gap:12px;align-items:flex-end">
+      <div class="field">
+        <span>Fenstergröße (WIN)</span>
+        <select id="winSel">
+          <option value="30">30</option>
+          <option value="60" selected>60</option>
+          <option value="120">120</option>
+        </select>
+      </div>
+      <div class="field">
+        <span>|ρ|-Schwelle (nur Siege ≥)</span>
+        <input id="rhoMin" type="number" step="0.01" min="0" max="1" value="0.10" />
+      </div>
+      <div class="field">
+        <label style="display:flex;gap:8px;align-items:center;margin-top:20px">
+          <input id="useWeighted" type="checkbox" checked>
+          <span>Gewichtete % (Export)</span>
+        </label>
+      </div>
+      <div class="field" style="flex:1"></div>
       <button id="loadBtn" class="btn primary">Preisdaten laden</button>
       <button id="analyzeBtn" class="btn">Lead/Lag-Analyse</button>
       <button id="exportBtn" class="btn">Export (.csv)</button>
@@ -129,18 +149,16 @@
       <button id="directDownloadBtn" class="btn ghost" hidden>Direkt-Download (.csv)</button>
       <button id="resetBtn" class="btn danger ghost">Reset</button>
     </div>
+
     <div id="status" class="status"></div>
     <div id="currencyNote" class="hint" style="margin-top:6px"></div>
 
-    <!-- Tabelle 1: Preise -->
     <h3 style="margin:8px 0 6px">Preistabelle</h3>
     <div id="preview" class="tableWrap"></div>
 
-    <!-- Tabelle 2: Prozentuale Veränderung zum Vorwert (Basis = erster Preis) -->
-    <h3 style="margin:12px 0 6px">Prozent-Veränderung (zum Vorwert, Basis = erster Preis)</h3>
+    <h3 style="margin:12px 0 6px">Prozent-Veränderung (zum Vorwert; erste gültige Zelle = 0)</h3>
     <div id="processed" class="tableWrap"></div>
 
-    <!-- Analyse -->
     <h3 style="margin:12px 0 6px">Lead/Lag-Analyse</h3>
     <div id="analysis" class="tableWrap"></div>
   </section>
@@ -148,7 +166,6 @@
 
 <footer class="footer">PWA • Offline • IndexedDB Cache • Standalone auf iPhone</footer>
 
-<!-- Wichtig: nur EIN Modul laden -->
 <script type="module" src="./app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {
