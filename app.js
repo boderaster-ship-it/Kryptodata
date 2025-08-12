@@ -26,7 +26,7 @@ const state = {
 };
 
 let LAST_DATASET = null;   // {timestamps, series:[{label,values}], seriesProcessed:[{label,values}], intervalLabel, count, meta:{type}}
-let LAST_ANALYSIS = null;  // {interval, rows:[{a,b,probPct,lag,weightedProb,avgAbsR,wins,totalWins,win,rhoMin}]}
+let LAST_ANALYSIS = null;  // {interval, rows:[...], meta:{finalScore,finalVerdict,recommendations:[]}}
 
 function setStatus(msg){ EL('#status').textContent = msg || ''; }
 function setCurrencyNote(){
@@ -218,6 +218,16 @@ function corrWindowAtLag(a, b, lag, start, end){
   return {n, r};
 }
 
+// Bewertung 1–5 (einfach & robust)
+function rateResult(probPct, avgAbsR, totalWins){
+  // Schwellen: Prob, Stärke, Stichprobe
+  if(probPct>=70 && avgAbsR>=0.35 && totalWins>=40) return {score:5, verdict:'Sehr gut'};
+  if(probPct>=65 && avgAbsR>=0.30 && totalWins>=20) return {score:4, verdict:'Gut'};
+  if(probPct>=60 && avgAbsR>=0.25 && totalWins>=15) return {score:3, verdict:'Okay, prüfen'};
+  if(probPct>=55 && avgAbsR>=0.20 && totalWins>=10) return {score:2, verdict:'Schwach'};
+  return {score:1, verdict:'Nicht nutzbar'};
+}
+
 function analyzeLeadLag(){
   if(!LAST_DATASET){ setStatus('Bitte zuerst „Preisdaten laden“.'); return; }
   const { seriesProcessed, intervalLabel } = LAST_DATASET;
@@ -247,7 +257,6 @@ function analyzeLeadLag(){
       const cntAbsR = new Map();              // Anzahl Siegerfenster je Lag
       for(let l=-MAX_LAG; l<=MAX_LAG; l++){ if(l!==0){ counts.set(l,0); wCounts.set(l,0); sumAbsR.set(l,0); cntAbsR.set(l,0);} }
       let totalWins = 0;
-      let totalWeight = 0;
 
       if(tEnd >= tStart){
         for(let t=tStart; t<=tEnd; t++){
@@ -268,7 +277,6 @@ function analyzeLeadLag(){
             sumAbsR.set(bestLag, sumAbsR.get(bestLag)+bestAbs);
             cntAbsR.set(bestLag, cntAbsR.get(bestLag)+1);
             totalWins++;
-            totalWeight += bestAbs;
           }
         }
       }
@@ -289,6 +297,8 @@ function analyzeLeadLag(){
       const following= lagBest>0 ? seriesProcessed[j].label : (lagBest<0 ? seriesProcessed[i].label : seriesProcessed[j].label);
       const absLag  = Math.abs(lagBest);
 
+      const rating = rateResult(probPct, avgAbsR, totalWins);
+
       results.push({
         a: leading, b: following,
         probPct: Math.round(probPct*10)/10,
@@ -296,21 +306,28 @@ function analyzeLeadLag(){
         weightedProb: Math.round(weightedProb*10)/10,
         avgAbsR: Number(avgAbsR.toFixed(4)),
         wins: cntBest, totalWins,
-        win: WIN, rhoMin
+        win: WIN, rhoMin,
+        score: rating.score, verdict: rating.verdict
       });
     }
   }
 
-  // Sortierung: erst Wahrscheinlichkeit, dann gewichtete %, dann kleiner Lag
-  results.sort((x,y)=> (y.probPct - x.probPct) || (y.weightedProb - x.weightedProb) || (x.lag - y.lag));
+  // Sortierung: Score, dann Wahrscheinlichkeit, dann gewichtete %, dann kleiner Lag
+  results.sort((x,y)=> (y.score - x.score) || (y.probPct - x.probPct) || (y.weightedProb - x.weightedProb) || (x.lag - y.lag));
 
-  LAST_ANALYSIS = { interval: intervalLabel, rows: results };
+  // Meta für Export/Kontrollmechanismus
+  const maxScore = results.length ? Math.max(...results.map(r=>r.score)) : 1;
+  const verdictMap = {1:'Nicht nutzbar',2:'Schwach',3:'Okay, prüfen',4:'Gut',5:'Sehr gut'};
+  const finalVerdict = verdictMap[maxScore] || '–';
+  const recommendations = results.filter(r=> r.score>=4).slice(0,3)
+    .map(r=> `${r.a} → ${r.b} (Lag ${r.lag}, ${r.probPct.toFixed(1)}%, Ø|ρ| ${r.avgAbsR.toFixed(2)})`);
+  LAST_ANALYSIS = { interval: intervalLabel, rows: results, meta: { finalScore: maxScore, finalVerdict, recommendations } };
 
-  // UI-Tabelle (bewusst schlank wie gefordert)
+  // UI-Tabelle (mit Bewertung)
   const box = EL('#analysis'); box.innerHTML='';
   const tbl = document.createElement('table');
   const thead = document.createElement('thead'); const trh = document.createElement('tr');
-  trh.innerHTML = ['Währung A (führt)', 'Währung B', 'Wahrscheinlichkeit (%)', 'Vorlauf (Lags)'].map(h=>`<th>${h}</th>`).join('');
+  trh.innerHTML = ['Währung A (führt)', 'Währung B', 'Wahrscheinlichkeit (%)', 'Vorlauf (Lags)', 'Bewertung (1–5)'].map(h=>`<th>${h}</th>`).join('');
   thead.appendChild(trh);
   const tb = document.createElement('tbody');
   for(const r of results){
@@ -319,13 +336,21 @@ function analyzeLeadLag(){
       `<td>${r.a}</td>`,
       `<td>${r.b}</td>`,
       `<td>${r.probPct.toFixed(1).replace('.',',')}</td>`,
-      `<td>${r.lag}</td>`
+      `<td>${r.lag}</td>`,
+      `<td>${r.score} – ${r.verdict}</td>`
     ].join('');
     tb.appendChild(tr);
   }
   tbl.appendChild(thead); tbl.appendChild(tb); box.appendChild(tbl);
 
-  setStatus(`Analyse fertig. 1 Lag = ${intervalLabel}. Fenster=${results[0]?.win||'-'}, |ρ|≥${(results[0]?.rhoMin??0).toFixed(2)}. (Gewichtete % & Ø|ρ| im Export)`);
+  // Kontroll-Zusammenfassung
+  const sum = document.createElement('div');
+  sum.className = 'hint';
+  const recText = (recommendations.length? recommendations.join(' • ') : 'Keine Kandidaten ≥4.');
+  sum.innerHTML = `<strong>Finale Bewertung:</strong> ${maxScore}/5 – ${finalVerdict}. <strong>Empfehlungen:</strong> ${recText}`;
+  box.appendChild(sum);
+
+  setStatus(`Analyse fertig. 1 Lag = ${intervalLabel}. Fenster=${results[0]?.win||'-'}, |ρ|≥${(results[0]?.rhoMin??0).toFixed(2)}.`);
 }
 
 // ---------- Export ----------
