@@ -20,7 +20,7 @@ export function buildCsv(dataset){
   return lines.join('\n');
 }
 
-// iPhone: primär Share-Sheet („In Dateien sichern“), sonst Tab öffnen, sonst Download
+// iPhone/Tablet/Browser: primär Share-Sheet („In Dateien sichern“), sonst Tab öffnen, sonst Download
 export async function saveCsv(csv, filename='preise_export.csv'){
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
   const file = new File([blob], filename, {type: 'text/csv'});
@@ -44,5 +44,14 @@ export async function saveCsv(csv, filename='preise_export.csv'){
     const a = Object.assign(document.createElement('a'), {href:url, download:filename});
     document.body.appendChild(a); a.click(); a.remove();
   }
+  setTimeout(()=>URL.revokeObjectURL(url), 10000);
+}
+
+// Zusätzlicher Direkt-Download (für Laptop/Desktop), ohne Share-Sheet
+export function downloadCsvDirect(csv, filename='preise_export.csv'){
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), {href:url, download:filename});
+  document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 10000);
 }
