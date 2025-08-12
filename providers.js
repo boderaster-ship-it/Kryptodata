@@ -29,7 +29,7 @@ export async function searchCrypto(query){
   return (j.coins||[]).map(c=>({ type:'crypto', id:c.id, symbol:c.symbol.toUpperCase(), name:c.name }));
 }
 
-export async function searchEquity(query, avKey){
+export async function searchEquity(query){
   if(!query?.trim()) return [];
   // 1) Yahoo Finance Suche (ohne Key, via Proxy)
   try{
@@ -47,23 +47,7 @@ export async function searchEquity(query, avKey){
       }));
     if(arr.length) return arr;
   }catch(_){}
-  // 2) AlphaVantage (optional)
-  if(avKey){
-    const url = `${AV}?function=SYMBOL_SEARCH&keywords=${encodeURIComponent(query)}&apikey=${avKey}`;
-    try{
-      const j = await fetchMaybe(url, 'json');
-      const arr = (j.bestMatches||[]).map(x=>({
-        type:'equity',
-        symbol: x['1. symbol'],
-        name: x['2. name'],
-        region: x['4. region'],
-        currency: x['8. currency']
-      }));
-      if(arr.length) return arr;
-    }catch(_){}
-    await sleep(300);
-  }
-  // 3) Fallback: akzeptiere manuelle Ticker
+  // 2) Fallback: akzeptiere manuelle Ticker
   if(/^[A-Z0-9\.\-]{2,12}$/.test(query.toUpperCase())){
     return [{type:'equity', symbol: query.toUpperCase(), name:'(Ticker manuell)'}];
   }
@@ -86,7 +70,7 @@ export function buildBuckets(range, interval){
   return {buckets, iv};
 }
 
-// ---- Krypto-Preise
+// ---- Krypto-Preise (CoinGecko + Binance)
 async function cgMarket(id, vs='usd', range, interval){
   const map = (range, iv)=>{
     if (iv==='1d' || iv==='1w') return 'daily';
@@ -102,32 +86,30 @@ async function cgMarket(id, vs='usd', range, interval){
   return (j.prices||[]).map(p=>({ts:p[0], v:p[1]}));
 }
 
-// Binance Klines paginiert (tiefe Historie)
+// Binance Klines paginiert (tiefe Historie) – SNAP TO CLOSE
 async function binanceKlinesPaged(symbol, interval, startMs, endMs){
   const map = { '1m':'1m','2m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','4h':'4h','1d':'1d','1w':'1w' };
   const iv = map[interval] ?? '5m';
   const limit = 1000;
   let end = endMs;
   const out = [];
-  for(let safety=0; safety<30; safety++){
+  for(let safety=0; safety<40; safety++){
     const url = `${BN}/api/v3/klines?symbol=${symbol}&interval=${iv}&endTime=${end}&limit=${limit}`;
-    const arr = await fetchMaybe(url, 'json'); // [ [openTime, ... , close, ...], ... ] asc
+    const arr = await fetchMaybe(url, 'json'); // [ openTime, open, high, low, close, volume, closeTime, ... ]
     if(!Array.isArray(arr) || arr.length===0) break;
-    out.unshift(...arr); // sammeln
+    out.unshift(...arr);
     const firstOpen = arr[0][0];
     if(firstOpen <= startMs) break;
     end = firstOpen - 1;
   }
   return out
-    .map(k=>({ts:k[0], v: Number(k[4])}))
+    .map(k=>({ts:k[6], v: Number(k[4])})) // *** closeTime + close ***
     .filter(p=> p.ts>=startMs && p.ts<=endMs)
     .sort((a,b)=>a.ts-b.ts);
 }
 
 async function tryBinanceForSymbol(symUpper, range, interval){
-  // Heuristik: <SYMBOL>USDT
   const pair = `${symUpper}USDT`;
-  // Optionale Verifikation könnte über exchangeInfo laufen; hier direkt klines.
   const now = Date.now();
   const spanMs = { '12h':12*3600e3, '1d':24*3600e3, '7d':7*24*3600e3, '14d':14*24*3600e3, '30d':30*24*3600e3, 'max':90*24*3600e3 }[range] || 24*3600e3;
   const start = now - spanMs;
@@ -147,11 +129,9 @@ export async function fetchCryptoSeries(sel, settings){
   const series = [];
   for(const c of sel){
     let pts = [];
-    // 1) Binance (falls Symbol zuverlässig)
     if(c.symbol){
       pts = await tryBinanceForSymbol((c.symbol||'').toUpperCase(), range, interval);
     }
-    // 2) Fallback: CoinGecko
     if(!pts.length){
       try{ pts = await cgMarket(c.id, 'usd', range, interval); } catch(_){ pts = []; }
     }
@@ -171,7 +151,6 @@ function mapRangeToYahoo(range){
   const map = { '12h':'1d','1d':'1d','7d':'7d','14d':'14d','30d':'30d','max':'max' };
   return map[range] || '7d';
 }
-
 async function yfChart(symbol, interval, range){
   const iv = mapIntervalToYahoo(interval);
   const rg = mapRangeToYahoo(range);
@@ -189,24 +168,6 @@ async function yfChart(symbol, interval, range){
   }
   return out;
 }
-
-async function avTimeSeries(symbol, interval, avKey){
-  const intraday = ['1m','2m','5m','15m','30m','1h'].includes(interval);
-  if(intraday){
-    const map = {'1m':'1min','2m':'1min','5m':'5min','15m':'15min','30m':'30min','1h':'60min'};
-    const iv = map[interval] || '5min';
-    const url = `${AV}?function=TIME_SERIES_INTRADAY&symbol=${encodeURIComponent(symbol)}&interval=${iv}&outputsize=full&datatype=json&apikey=${avKey}`;
-    const j = await fetchMaybe(url, 'json');
-    const key = Object.keys(j).find(k=>k.includes('Time Series')); const obj = j[key]||{};
-    return Object.entries(obj).map(([ts,o])=>({ts: Date.parse(ts), v: Number(o['4. close'])})).sort((a,b)=>a.ts-b.ts);
-  } else {
-    const url = `${AV}?function=TIME_SERIES_DAILY_ADJUSTED&symbol=${encodeURIComponent(symbol)}&outputsize=full&apikey=${avKey}`;
-    const j = await fetchMaybe(url, 'json');
-    const obj = j['Time Series (Daily)']||{};
-    return Object.entries(obj).map(([ts,o])=>({ts: Date.parse(ts), v: Number(o['4. close'])})).sort((a,b)=>a.ts-b.ts);
-  }
-}
-
 async function stooqDaily(symbol){
   const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol.toLowerCase())}&i=d`;
   const txt = await fetchMaybe(url, 'text');
@@ -216,8 +177,7 @@ async function stooqDaily(symbol){
     return {ts: Date.parse(d), v: Number(close)};
   }).sort((a,b)=>a.ts-b.ts);
 }
-
-export async function fetchEquitySeries(sel, settings, avKey){
+export async function fetchEquitySeries(sel, settings){
   const key = k({t:'equity', ids: sel.map(s=>s.symbol), settings});
   const cached = await cacheGet(key, 5*60e3);
   if(cached) return cached;
@@ -226,15 +186,9 @@ export async function fetchEquitySeries(sel, settings, avKey){
   const series = [];
   for(const s of sel){
     let pts=[];
-    // 1) Yahoo Finance (feine Intervalle) ohne Key
     try{ pts = await yfChart(s.symbol, interval, range); }catch(_){ pts=[]; }
-    // 2) Fallback Stooq (daily)
     if(!pts.length){
       try{ pts = await stooqDaily(s.symbol); }catch(_){ pts=[]; }
-    }
-    // 3) Optional Alpha Vantage, falls Key vorhanden
-    if(!pts.length && avKey){
-      try{ pts = await avTimeSeries(s.symbol, interval, avKey); }catch(_){ pts=[]; }
     }
     series.push({ label: `${s.symbol} • ${s.name||''}`, points: pts });
   }
@@ -243,20 +197,33 @@ export async function fetchEquitySeries(sel, settings, avKey){
   return res;
 }
 
-// ---- Harmonisierung auf Buckets
-export function alignToBuckets(buckets, series){
-  function nearestVal(points, t){
-    if(!points?.length) return null;
-    // einfache lineare Suche (Daten überschaubar)
-    let best=null, bd=1e18;
-    for(const p of points){
-      const d = Math.abs(p.ts - t);
-      if(d<bd){ bd=d; best=p; }
+// ---- Harmonisierung auf Buckets (LINEAR-Interpolation + kurzer LOCF)
+export function alignToBuckets(buckets, series, opts={}){
+  const iv = opts.iv || (buckets.length>1 ? (buckets[1]-buckets[0]) : 0);
+  const out = [];
+  for(const s of series){
+    const pts = (s.points||[]).slice().sort((a,b)=>a.ts-b.ts);
+    const values = new Array(buckets.length).fill(null);
+    if(pts.length===0){ out.push({label:s.label, values}); continue; }
+
+    let j = 0; // Zeiger auf vorherigen Punkt
+    for(let bi=0; bi<buckets.length; bi++){
+      const t = buckets[bi];
+      // vorziehen bis nächster > t
+      while(j+1<pts.length && pts[j+1].ts<=t){ j++; }
+      const prev = (pts[j] && pts[j].ts<=t) ? pts[j] : null;
+      const next = (j+1<pts.length) ? pts[j+1] : null;
+
+      if(prev && next && next.ts>prev.ts){
+        const w = (t - prev.ts) / (next.ts - prev.ts);
+        values[bi] = prev.v + w*(next.v - prev.v);
+      } else if(prev && (t - prev.ts) <= iv){ // kurzer LOCF (max 1 Intervall)
+        values[bi] = prev.v;
+      } else {
+        values[bi] = null;
+      }
     }
-    return best? best.v : null;
+    out.push({ label: s.label, values });
   }
-  return series.map(s=>({
-    label: s.label,
-    values: buckets.map(t=> nearestVal(s.points, t))
-  }));
+  return out;
 }
