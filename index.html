@@ -20,10 +20,12 @@
 <main class="wrap">
   <section class="card">
     <h2>Einstellungen</h2>
+
+    <!-- Krypto-Settings -->
     <div class="row">
       <label class="field">
-        <span>Zeitraum</span>
-        <select id="rangeSel">
+        <span>Zeitraum (Krypto)</span>
+        <select id="rangeCryptoSel">
           <option value="12h">12 Std.</option>
           <option value="1d" selected>1 Tag</option>
           <option value="7d">7 Tage</option>
@@ -33,8 +35,8 @@
         </select>
       </label>
       <label class="field">
-        <span>Datenabstand</span>
-        <select id="intervalSel" title="Granularität (API-abhängig)">
+        <span>Datenabstand (Krypto)</span>
+        <select id="intervalCryptoSel" title="Granularität je Quelle">
           <option value="1m">1 Min</option>
           <option value="2m">2 Min</option>
           <option value="5m" selected>5 Min</option>
@@ -46,13 +48,51 @@
           <option value="1w">1 Woche</option>
         </select>
       </label>
-      <label class="field">
-        <span>AlphaVantage API Key (optional für Aktien/ETF)</span>
-        <input id="avKey" type="password" placeholder="AV Key eingeben & speichern">
-      </label>
-      <button id="saveKeyBtn" class="btn">Key speichern</button>
     </div>
-    <small class="hint">Quellen: Binance, CoinGecko, Yahoo Finance (über Proxy), Stooq, optional Alpha Vantage. Feine Intervalle sind je Quelle begrenzt – das Tool mapped alles auf deine gewählten Buckets.</small>
+    <small class="hint" id="cryptoHint">
+      Krypto-Preise: CoinGecko (USD) und/oder Binance (USDT ≈ USD). Alle Daten werden auf deinen gewählten Datenabstand gebucketet.
+    </small>
+
+    <hr style="border:none;border-top:1px solid #20252e;margin:12px 0">
+
+    <!-- Aktien/ETF optional (Beta; ohne API-Key) -->
+    <div class="row">
+      <label class="field" style="min-width:200px">
+        <span>Aktien & ETF (Beta)</span>
+        <div>
+          <input id="equityEnable" type="checkbox">
+          <label for="equityEnable">Aktivieren (freie Quellen: Yahoo Finance via Proxy, Stooq)</label>
+        </div>
+      </label>
+      <label class="field">
+        <span>Zeitraum (Aktien)</span>
+        <select id="rangeEquitySel" disabled>
+          <option value="12h">12 Std.</option>
+          <option value="1d" selected>1 Tag</option>
+          <option value="7d">7 Tage</option>
+          <option value="14d">14 Tage</option>
+          <option value="30d">30 Tage</option>
+          <option value="max">Maximal</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Datenabstand (Aktien)</span>
+        <select id="intervalEquitySel" disabled>
+          <option value="1m">1 Min</option>
+          <option value="2m">2 Min</option>
+          <option value="5m" selected>5 Min</option>
+          <option value="15m">15 Min</option>
+          <option value="30m">30 Min</option>
+          <option value="1h">1 Std</option>
+          <option value="4h">4 Std</option>
+          <option value="1d">1 Tag</option>
+          <option value="1w">1 Woche</option>
+        </select>
+      </label>
+    </div>
+    <small class="hint" id="equityHint">
+      Hinweis: Wenn deaktiviert, werden alle Aktien/ETF-Funktionen ausgeblendet. Ohne API-Key nur freie Quellen.
+    </small>
   </section>
 
   <section class="card">
@@ -71,7 +111,7 @@
 
       <div class="pane" id="pane-equity">
         <div class="searchbar">
-          <input id="qEquity" type="search" inputmode="search" placeholder="Aktien/ETF/Fonds suchen (live)…">
+          <input id="qEquity" type="search" inputmode="search" placeholder="Aktien/ETF/Fonds suchen (live)…" disabled>
         </div>
         <ul id="equityResults" class="results"></ul>
       </div>
@@ -83,11 +123,15 @@
     <div id="selectedChips" class="chips"></div>
     <div class="row actions">
       <button id="loadBtn" class="btn primary">Preisdaten laden</button>
+      <button id="analyzeBtn" class="btn">Lead/Lag-Analyse</button>
       <button id="exportBtn" class="btn">Export (.csv)</button>
+      <button id="directDownloadBtn" class="btn ghost" hidden>Direkt-Download (.csv)</button>
       <button id="resetBtn" class="btn danger ghost">Reset</button>
     </div>
     <div id="status" class="status"></div>
+    <div id="currencyNote" class="hint" style="margin-top:6px"></div>
     <div id="preview" class="tableWrap"></div>
+    <div id="analysis" class="status" style="margin-top:10px"></div>
   </section>
 </main>
 
